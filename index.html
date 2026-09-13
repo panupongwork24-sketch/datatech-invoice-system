@@ -991,7 +991,9 @@ function applyImport(){
   if(d.custAddr) document.getElementById('custAddr').value = d.custAddr;
   if(d.custPhone) document.getElementById('custPhone').value = d.custPhone;
   if(d.quotNo) document.getElementById('refQuot').value = d.quotNo;
-  if(d.quotDate) document.getElementById('docDate').value = normalizeDateForInput(d.quotDate);
+  // หมายเหตุ: docDate (วันที่ออกเอกสาร INV/BI) ต้องเป็นวันที่ออกเอกสารจริง
+  // ไม่ใช่วันที่ในใบเสนอราคา (quotDate) — สองเอกสารนี้คนละวันที่กันตามธรรมชาติ
+  // จึงคงค่า docDate ไว้เป็นวันปัจจุบัน (ตั้งไว้ตอนโหลดหน้า) ไม่ดึงมาจากใบเสนอราคา
 
   if(d.items.length){
     document.getElementById('itemsBody').innerHTML = '';
@@ -1819,12 +1821,33 @@ function sheetRowLink(sheetRow){
   return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=${SHEET_GID}&range=${PAID_COLUMN_LETTER}${sheetRow}`;
 }
 
+// ลิงก์เปิดไปที่ต้นแถว (column A) ของแถวนั้นใน Sheet — ใช้สำหรับปุ่ม "ลบเอกสาร"
+// เปิดที่ต้นแถวแทนที่จะเป็น cell เดียว เพื่อให้เห็นข้อมูลทั้งแถวชัดเจนก่อนตัดสินใจลบ
+function deleteRowLink(sheetRow){
+  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=${SHEET_GID}&range=A${sheetRow}`;
+}
+
 // แสดงคำแนะนำก่อนเปิด Sheet ในแท็บใหม่ — ผู้ใช้ใหม่จะได้รู้ว่าต้องทำอะไรต่อ
 // (พิมพ์กำกับตำแหน่ง แล้วกลับมาหน้านี้ระบบจะรีเฟรชให้อัตโนมัติ)
 let awaitingSheetEdit = false;
 function onMarkPaidClick(){
   awaitingSheetEdit = true;
   showBanner('เปิด Google Sheet ในแท็บใหม่แล้ว — พิมพ์ "paid" ที่ช่องนั้นแล้วกด Enter จากนั้นกลับมาแท็บนี้ ระบบจะรีเฟรชสถานะให้อัตโนมัติ');
+}
+
+// กดปุ่ม "ลบเอกสาร" — ยืนยันก่อนเสมอ (กันกดพลาด) แล้วเปิด Sheet ไปที่แถวนั้นให้
+// หมายเหตุ: เว็บนี้อ่านข้อมูลจาก Sheet แบบ read-only (publish CSV) เท่านั้น
+// จึงลบแถวจริงให้อัตโนมัติจากตรงนี้ไม่ได้ ต้องกด Delete row เองใน Sheet อีกที
+function onDeleteClick(docNo, sheetRow){
+  const ok = confirm(
+    `ยืนยันลบเอกสาร ${docNo} ใช่หรือไม่?\n\n` +
+    `ระบบจะเปิด Google Sheet ไปที่แถวนี้ให้ — กรุณาคลิกขวาที่เลขแถว (ทางซ้ายสุด) แล้วเลือก "Delete row" เพื่อลบให้เสร็จสมบูรณ์\n\n` +
+    `หมายเหตุ: ถ้าเอกสารนี้เคยส่งให้ลูกค้าแล้ว ควรออกใบลดหนี้แทนการลบ เพื่อรักษาร่องรอยบัญชี`
+  );
+  if(!ok) return;
+  awaitingSheetEdit = true;
+  window.open(deleteRowLink(sheetRow), '_blank');
+  showBanner(`เปิด Google Sheet ไปที่แถว ${docNo} แล้ว — คลิกขวาเลขแถว → Delete row จากนั้นกลับมาแท็บนี้ ระบบจะรีเฟรชให้อัตโนมัติ`);
 }
 
 // ตรวจจับเมื่อผู้ใช้สลับกลับมาที่แท็บนี้ (จากการไปแก้ Sheet ในแท็บอื่น) — รีเฟรชประวัติให้อัตโนมัติ
@@ -2008,6 +2031,7 @@ function renderHistoryTable(){
       ? `<a href="${sheetRowLink(r.sheetRow)}" target="_blank" class="btn btn-ghost btn-xs" onclick="onMarkPaidClick()">แก้ไข</a>`
       : `<a href="${sheetRowLink(r.sheetRow)}" target="_blank" class="btn btn-xs" onclick="onMarkPaidClick()">ทำเครื่องหมายจ่ายแล้ว</a>`;
     const pdfBtn = `<button class="btn btn-ghost btn-xs" onclick="regeneratePdfFromHistory('${escapeHtml(r.docNo)}')">ดู PDF</button>`;
+    const deleteBtn = `<button class="btn btn-ghost btn-xs" style="color:var(--red)" onclick="onDeleteClick('${escapeHtml(r.docNo)}', ${r.sheetRow})">ลบ</button>`;
     return `
       <tr>
         <td class="docno-cell">${escapeHtml(r.docNo)}</td>
@@ -2017,7 +2041,7 @@ function renderHistoryTable(){
         <td class="num">${fmtPlain(r.grand)}</td>
         <td>${r.dueDate || '-'}</td>
         <td>${badge}</td>
-        <td style="display:flex;gap:6px;flex-wrap:wrap">${pdfBtn}${actionBtn}</td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap">${pdfBtn}${actionBtn}${deleteBtn}</td>
       </tr>`;
   }).join('');
 }
