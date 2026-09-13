@@ -465,6 +465,7 @@ body{
 
   <div class="banner banner-ok" id="okBanner">
     <span id="okBannerText"></span>
+    <a href="#" id="okBannerLink" style="display:none;margin-left:10px;font-weight:600;text-decoration:underline" target="_blank" rel="noopener">เปิด PDF ในแท็บใหม่</a>
   </div>
 
   <!-- ══════════ PAGE: CREATE ══════════ -->
@@ -1377,33 +1378,67 @@ function validateBeforeExport(data){
 // Core renderer ใช้ร่วมกันทั้งจากฟอร์มปัจจุบัน (generatePDF) และจากประวัติ (regeneratePdfFromHistory)
 // รับ data object รูปแบบเดียวกับที่ collectFormData() คืนค่า
 async function renderDataToPDF(data){
+  // กัน error เงียบ: เช็คว่า library จาก CDN โหลดมาจริงก่อนใช้งาน
+  // (ถ้า cdnjs โดนบล็อกจาก network/ad-blocker window.jspdf หรือ html2canvas จะเป็น undefined)
+  if(typeof window.jspdf === 'undefined'){
+    throw new Error('โหลดไลบรารี jsPDF ไม่สำเร็จ — เช็คการเชื่อมต่ออินเทอร์เน็ต หรือลองปิด ad-blocker แล้วรีเฟรชหน้าใหม่');
+  }
+  if(typeof html2canvas === 'undefined'){
+    throw new Error('โหลดไลบรารี html2canvas ไม่สำเร็จ — เช็คการเชื่อมต่ออินเทอร์เน็ต หรือลองปิด ad-blocker แล้วรีเฟรชหน้าใหม่');
+  }
+
   const copies = getCopyConfigs(data.docType);
   const container = document.createElement('div');
   container.style.position='fixed'; container.style.left='-9999px'; container.style.top='0';
   document.body.appendChild(container);
 
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF('p','mm','a4', {compress:true});
+  try{
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p','mm','a4', {compress:true});
 
-  for(let i=0; i<copies.length; i++){
-    container.innerHTML = buildCopyHTML(data, copies[i]);
-    const el = container.firstElementChild;
-    const canvas = await html2canvas(el, {scale:1.5, useCORS:true, backgroundColor:'#ffffff'});
-    const imgData = canvas.toDataURL('image/png');
-    if(i>0) pdf.addPage();
-    pdf.addImage(imgData, 'PNG', 10, 10, 190, 277, undefined, 'FAST');
+    for(let i=0; i<copies.length; i++){
+      container.innerHTML = buildCopyHTML(data, copies[i]);
+      const el = container.firstElementChild;
+      const canvas = await html2canvas(el, {scale:1.5, useCORS:true, backgroundColor:'#ffffff'});
+      const imgData = canvas.toDataURL('image/png');
+      if(i>0) pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 10, 10, 190, 277, undefined, 'FAST');
+    }
+
+    // ใช้วิธี blob URL + anchor เอง แทน pdf.save() ตรงๆ
+    // เพราะ pdf.save() ภายในก็ทำแบบเดียวกันแต่บางเบราว์เซอร์/extension เงียบๆ ไม่ trigger ให้
+    const blob = pdf.output('blob');
+    const blobUrl = URL.createObjectURL(blob);
+    const filename = `${data.docNo}.pdf`;
+
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    // คืนหน่วยความจำหลังผ่านไปพอสมควร (เผื่อผู้ใช้กดปุ่ม fallback เปิดในแท็บใหม่)
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
+
+    return { count: copies.length, blobUrl, filename };
+  } finally {
+    // ลบ container เสมอไม่ว่าจะสำเร็จหรือ error กันไม่ให้ dom ค้าง
+    if(container.parentNode) document.body.removeChild(container);
   }
-
-  document.body.removeChild(container);
-  pdf.save(`${data.docNo}.pdf`);
-  return copies.length;
 }
 
 async function generatePDF(){
   const data = collectFormData();
   if(!validateBeforeExport(data)) return;
-  const n = await renderDataToPDF(data);
-  showBanner(`สร้าง PDF ${data.docNo} สำเร็จ (${n} ชุด)`);
+  try{
+    const result = await renderDataToPDF(data);
+    showBannerWithPdfLink(`สร้าง PDF ${data.docNo} สำเร็จ (${result.count} ชุด) — ถ้าไฟล์ไม่โหลดลงเครื่อง กดลิงก์ด้านขวา`, result.blobUrl);
+  }catch(err){
+    console.error('generatePDF error:', err);
+    alert('สร้าง PDF ไม่สำเร็จ: ' + err.message);
+  }
 }
 
 // Regenerate PDF ของเอกสารเก่าจากหน้าประวัติ — ดึงข้อมูลที่มีอยู่แล้วใน historyRows (มาจาก Sheet)
@@ -1457,8 +1492,8 @@ async function regeneratePdfFromHistory(docNo){
 
   showBanner(`กำลังสร้าง PDF ${docNo} จากข้อมูลในชีต...`);
   try{
-    const n = await renderDataToPDF(data);
-    showBanner(`สร้าง PDF ${docNo} สำเร็จ (${n} ชุด) — ข้อมูลจากชีตล่าสุด`);
+    const result = await renderDataToPDF(data);
+    showBannerWithPdfLink(`สร้าง PDF ${docNo} สำเร็จ (${result.count} ชุด) — ถ้าไฟล์ไม่โหลดลงเครื่อง กดลิงก์ด้านขวา`, result.blobUrl);
   }catch(err){
     alert('สร้าง PDF ไม่สำเร็จ: ' + err.message);
   }
@@ -1556,8 +1591,22 @@ function showSheetRow(){
 function showBanner(msg){
   const b = document.getElementById('okBanner');
   document.getElementById('okBannerText').textContent = msg;
+  document.getElementById('okBannerLink').style.display = 'none';
   b.classList.add('show');
   setTimeout(()=>b.classList.remove('show'), 5000);
+}
+
+// เหมือน showBanner แต่แนบปุ่ม "เปิด PDF ในแท็บใหม่" ไว้ด้วย — ใช้หลัง generate PDF
+// เผื่อการดาวน์โหลดอัตโนมัติไม่ทำงาน (บาง browser/extension บล็อกเงียบๆ โดยไม่มี error)
+// ผู้ใช้กดลิงก์นี้เองได้ถ้าไฟล์ไม่มาที่ Downloads
+function showBannerWithPdfLink(msg, blobUrl){
+  const b = document.getElementById('okBanner');
+  document.getElementById('okBannerText').textContent = msg;
+  const link = document.getElementById('okBannerLink');
+  link.href = blobUrl;
+  link.style.display = 'inline';
+  b.classList.add('show');
+  setTimeout(()=>b.classList.remove('show'), 15000); // เปิดค้างนานกว่าปกติ เพราะมีปุ่มให้กด
 }
 
 function clearForm(){
