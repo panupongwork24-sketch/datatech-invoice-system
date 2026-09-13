@@ -1374,10 +1374,9 @@ function validateBeforeExport(data){
   return true;
 }
 
-async function generatePDF(){
-  const data = collectFormData();
-  if(!validateBeforeExport(data)) return;
-
+// Core renderer ใช้ร่วมกันทั้งจากฟอร์มปัจจุบัน (generatePDF) และจากประวัติ (regeneratePdfFromHistory)
+// รับ data object รูปแบบเดียวกับที่ collectFormData() คืนค่า
+async function renderDataToPDF(data){
   const copies = getCopyConfigs(data.docType);
   const container = document.createElement('div');
   container.style.position='fixed'; container.style.left='-9999px'; container.style.top='0';
@@ -1397,7 +1396,72 @@ async function generatePDF(){
 
   document.body.removeChild(container);
   pdf.save(`${data.docNo}.pdf`);
-  showBanner(`สร้าง PDF ${data.docNo} สำเร็จ (${copies.length} ชุด)`);
+  return copies.length;
+}
+
+async function generatePDF(){
+  const data = collectFormData();
+  if(!validateBeforeExport(data)) return;
+  const n = await renderDataToPDF(data);
+  showBanner(`สร้าง PDF ${data.docNo} สำเร็จ (${n} ชุด)`);
+}
+
+// Regenerate PDF ของเอกสารเก่าจากหน้าประวัติ — ดึงข้อมูลที่มีอยู่แล้วใน historyRows (มาจาก Sheet)
+// มาแปลงเป็น data object รูปแบบเดียวกับที่ buildCopyHTML ต้องการ แล้ว render ใหม่
+// หมายเหตุ: นี่คือการ "สร้าง PDF ใหม่จากข้อมูลปัจจุบันใน Sheet" ไม่ใช่การเปิดไฟล์ PDF เดิมที่เคยดาวน์โหลดไว้
+// (ระบบนี้ไม่ได้เก็บไฟล์ PDF ถาวรไว้ที่ไหน) ถ้าแถวใน Sheet ถูกแก้ไขภายหลัง PDF ที่ได้จะสะท้อนข้อมูลล่าสุดเสมอ
+async function regeneratePdfFromHistory(docNo){
+  const row = historyRows.find(r => r.docNo === docNo);
+  if(!row){ alert('ไม่พบข้อมูลเอกสาร ' + docNo + ' — ลองกดรีเฟรชประวัติแล้วลองใหม่'); return; }
+
+  let items = [];
+  try{
+    const parsed = JSON.parse(row.itemsJsonRaw || '[]');
+    items = parsed.map(it => ({
+      desc: it.desc || '',
+      qty: it.qty || 0,
+      unit: it.unit || '',
+      price: it.price || 0,
+      amount: it.amount != null ? it.amount : round2((it.qty||0) * (it.price||0)),
+    }));
+  }catch(err){
+    alert('ข้อมูลรายการสินค้าของ ' + docNo + ' ในชีตอ่านไม่ได้ (Items JSON เสีย) — ไม่สามารถสร้าง PDF ได้');
+    return;
+  }
+  if(!items.length){
+    alert('เอกสาร ' + docNo + ' ไม่มีข้อมูลรายการสินค้าในชีต — ไม่สามารถสร้าง PDF ได้');
+    return;
+  }
+
+  const data = {
+    docNo: row.docNo,
+    docType: row.docType,
+    docDate: row.docDate,
+    dueDate: row.dueDate,
+    custName: row.custName,
+    custTax: row.custTax,
+    custAddr: row.custAddr,
+    custPhone: row.custPhone,
+    refQuot: row.refQuot,
+    remark: row.remark,
+    sender: row.sender,
+    items,
+    sub: row.sub,
+    vat: row.vat,
+    grand: row.grand,
+    whtRate: row.whtRate,
+    wht: row.wht,
+    net: row.net,
+    words: thaiBahtText(row.grand),
+  };
+
+  showBanner(`กำลังสร้าง PDF ${docNo} จากข้อมูลในชีต...`);
+  try{
+    const n = await renderDataToPDF(data);
+    showBanner(`สร้าง PDF ${docNo} สำเร็จ (${n} ชุด) — ข้อมูลจากชีตล่าสุด`);
+  }catch(err){
+    alert('สร้าง PDF ไม่สำเร็จ: ' + err.message);
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1669,6 +1733,19 @@ async function loadHistory(){
         dueDate: x.r[idx('DueDate')] || '',
         paid: (x.r[idx('Paid')] || '').trim().toLowerCase() === 'paid',
         sheetRow: x.sheetRow,
+        // ── ฟิลด์เพิ่มเติม เก็บไว้สำหรับ regenerate PDF ย้อนหลังจากหน้าประวัติ ──
+        custTax: x.r[idx('CustTax')] || '',
+        custAddr: x.r[idx('CustAddr')] || '',
+        custPhone: x.r[idx('CustPhone')] || '',
+        refQuot: x.r[idx('RefQuot')] || '',
+        sub: parseFloat(x.r[idx('Sub')]) || 0,
+        vat: parseFloat(x.r[idx('VAT')]) || 0,
+        whtRate: (parseFloat(x.r[idx('WHT%')]) || 0) / 100,
+        wht: parseFloat(x.r[idx('WHTAmt')]) || 0,
+        net: parseFloat(x.r[idx('Net')]) || 0,
+        remark: x.r[idx('Remark')] || '',
+        sender: x.r[idx('Sender')] || '',
+        itemsJsonRaw: x.r[idx('Items(JSON)')] || '[]',
       }));
 
     matchBiInvPairs();
@@ -1881,6 +1958,7 @@ function renderHistoryTable(){
     const actionBtn = r.paid
       ? `<a href="${sheetRowLink(r.sheetRow)}" target="_blank" class="btn btn-ghost btn-xs" onclick="onMarkPaidClick()">แก้ไข</a>`
       : `<a href="${sheetRowLink(r.sheetRow)}" target="_blank" class="btn btn-xs" onclick="onMarkPaidClick()">ทำเครื่องหมายจ่ายแล้ว</a>`;
+    const pdfBtn = `<button class="btn btn-ghost btn-xs" onclick="regeneratePdfFromHistory('${escapeHtml(r.docNo)}')">ดู PDF</button>`;
     return `
       <tr>
         <td class="docno-cell">${escapeHtml(r.docNo)}</td>
@@ -1890,7 +1968,7 @@ function renderHistoryTable(){
         <td class="num">${fmtPlain(r.grand)}</td>
         <td>${r.dueDate || '-'}</td>
         <td>${badge}</td>
-        <td>${actionBtn}</td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap">${pdfBtn}${actionBtn}</td>
       </tr>`;
   }).join('');
 }
